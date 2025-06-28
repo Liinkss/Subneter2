@@ -135,7 +135,8 @@
             ipToLong(ip) { return ip.split('.').reduce((acc, octet) => (acc << 8) + parseInt(octet, 10), 0) >>> 0; },
             longToIp(long) { return [(long >>> 24), (long >>> 16) & 255, (long >>> 8) & 255, long & 255].join('.'); },
             cidrToSubnetMaskLong(cidr) { return (-1 << (32 - cidr)) >>> 0; },
-            subnetMaskToCidr(mask) { const long = this.ipToLong(mask); const bits = long.toString(2); if (!/^1*0*$/.test(bits)) throw new Error("Invalid subnet mask; must be contiguous."); return bits.split('1').length - 1; },
+            subnetMaskToCidr(mask) { const long = this.ipToLong(mask); const bits = long.toString(2).padStart(32,'0'); if (!/^1*0*$/.test(bits)) throw new Error("Invalid subnet mask; must be contiguous."); return bits.split('1').length - 1; },
+            isWildcardMask(mask) { const long = this.ipToLong(mask); const bits = long.toString(2).padStart(32,'0'); return /^0*1*$/.test(bits); },
             getClassfulCidr(ip) { const firstOctet = parseInt(ip.split('.')[0], 10); if (firstOctet >= 1 && firstOctet <= 126) return 8; if (firstOctet >= 128 && firstOctet <= 191) return 16; if (firstOctet >= 192 && firstOctet <= 223) return 24; return null; },
             isPrivateIp(ip) { const longIp = this.ipToLong(ip); return (longIp >= this.ipToLong('10.0.0.0') && longIp <= this.ipToLong('10.255.255.255')) || (longIp >= this.ipToLong('172.16.0.0') && longIp <= this.ipToLong('172.31.255.255')) || (longIp >= this.ipToLong('192.168.0.0') && longIp <= this.ipToLong('192.168.255.255')); }
         };
@@ -215,9 +216,7 @@
                                 "I tried to come up with a UDP joke, but I don't know if you'd get it.",
                                 "What's a router's favorite song? Never Gonna Give You Up, because it never lets a packet down.",
                                 "Why did the router get a promotion? It had a great packet-forwarding attitude.",
-                                "A packet walked into a bar. The bartender said, 'Sorry, we don't serve your kind here.' The packet replied, 'Why not? I'm well-formed!'",
-                                "What do you call a group of singing routers? A boy band-width.",
-                                "Why don't routers ever get lost? They always take the best route!"
+                                "A packet walked into a bar. The bartender said, 'Sorry, we don't serve your kind here.' The packet replied, 'Why not? I'm well-formed!'"
                             ];
                             const joke = jokes[Math.floor(Math.random() * jokes.length)]; setTimeout(() => this.appendMessage(joke, 'bot'), 300); return; 
                         }
@@ -235,20 +234,38 @@
                             else if (lowerInput.includes('broadcast')) response = `The Broadcast Address is <strong>${details.broadcastAddress}</strong>.`;
                             else response = this.formatFullResponse(details);
                             setTimeout(() => this.appendMessage(response, 'bot'), 300);
-                        } catch (error) { setTimeout(() => this.appendMessage(`I couldn't parse that. Please provide a valid IP and subnet. Error: ${error.message}`, 'bot'), 300); }
+                        } catch (error) { setTimeout(() => this.appendMessage(`I couldn't parse that. Please provide a valid IP and subnet/wildcard. Error: ${error.message}`, 'bot'), 300); }
                     },
-                    showHelp() { const instructions = `<strong>Subnet Calculator:</strong><ul class="list-disc pl-5 mt-2"><li>Ask specific questions like "wildcard for 192.168.1.1/24"</li><li>Enter an IP and subnet (e.g., 10.0.0.5 255.255.0.0) for a full breakdown.</li></ul><strong>VLSM Calculator:</strong><ul class="list-disc pl-5 mt-2"><li>Enter a major network block (e.g., 10.10.0.0/16).</li><li>Add rows for each required subnet size.</li><li>Click "Calculate VLSM".</li></ul><strong>Fun Commands:</strong><ul class="list-disc pl-5 mt-2"><li>tell me a joke</li><li>flip a coin</li><li>show matrix</li></ul>`; setTimeout(() => this.appendMessage(instructions, 'bot'), 300); },
+                    showHelp() { const instructions = `<strong>Subnet Calculator:</strong><ul class="list-disc pl-5 mt-2"><li>Ask specific questions like "wildcard for 192.168.1.1/24"</li><li>Enter an IP and subnet (e.g., 10.0.0.5 255.255.0.0).</li><li>Enter an IP and wildcard mask (e.g., 192.168.1.0 0.0.0.255).</li></ul><strong>VLSM Calculator:</strong><ul class="list-disc pl-5 mt-2"><li>Enter a major network block (e.g., 10.10.0.0/16).</li><li>Add rows for each required subnet size.</li><li>Click "Calculate VLSM".</li></ul><strong>Fun Commands:</strong><ul class="list-disc pl-5 mt-2"><li>tell me a joke</li><li>flip a coin</li><li>show matrix</li></ul>`; setTimeout(() => this.appendMessage(instructions, 'bot'), 300); },
                     parseIpInput(input) {
                         const ipRegex = /(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)/g;
                         const cidrRegex = /\/(\d{1,2})/;
-                        const matches = input.match(ipRegex) || [];
+                        const ipMatches = input.match(ipRegex) || [];
                         const cidrMatch = input.match(cidrRegex);
-                        if (matches.length === 0) throw new Error("No valid IP address found.");
-                        let ip = matches[0];
+                        if (ipMatches.length === 0) throw new Error("No valid IP address found.");
+                        let ip = ipMatches[0];
                         let cidr;
-                        if (cidrMatch) cidr = parseInt(cidrMatch[1], 10);
-                        else if (matches.length > 1) cidr = IPTools.subnetMaskToCidr(matches[1]);
-                        else { cidr = IPTools.getClassfulCidr(ip); if (cidr === null) throw new Error("No subnet specified and could not determine a default class."); }
+                        if (cidrMatch) {
+                            cidr = parseInt(cidrMatch[1], 10);
+                        } else if (ipMatches.length > 1) {
+                            const potentialMask = ipMatches[1];
+                            try {
+                                // Try parsing as a subnet mask first. Throws an error if invalid.
+                                cidr = IPTools.subnetMaskToCidr(potentialMask);
+                            } catch (e) {
+                                // If it fails, try parsing as a wildcard mask.
+                                if (IPTools.isWildcardMask(potentialMask)) {
+                                    const wildcardLong = IPTools.ipToLong(potentialMask);
+                                    const subnetMaskLong = ~wildcardLong >>> 0;
+                                    cidr = IPTools.subnetMaskToCidr(IPTools.longToIp(subnetMaskLong));
+                                } else {
+                                    throw new Error(`Invalid format. "${potentialMask}" is not a valid subnet or wildcard mask.`);
+                                }
+                            }
+                        } else {
+                            cidr = IPTools.getClassfulCidr(ip);
+                            if (cidr === null) throw new Error("No subnet/wildcard mask specified and could not determine a default class.");
+                        }
                         if (!IPTools.isValidIp(ip) || cidr < 0 || cidr > 32) throw new Error("Invalid IP/CIDR combination.");
                         return this.calculateSubnetDetails(ip, cidr);
                     },
